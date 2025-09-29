@@ -13,12 +13,6 @@ export interface Event {
   availableTickets: number;
 }
 
-export interface FilterOptions {
-  category: string;
-  location: string;
-  priceRange: 'all' | 'free' | 'paid';
-}
-
 export interface PaginationInfo {
   currentPage: number;
   totalPages: number;

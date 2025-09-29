@@ -25,8 +25,8 @@ export default function EventDetailPage({
           <div className="lg:col-span-2 space-y-8">
             {/* Back Button */}
             <Link
-              href="/home-page"
-              className="inline-flex items-center text-sm text-blue-600 hover:underline mb-4"
+              href="/home"
+              className="inline-flex items-center text-l text-black hover:underline mb-4"
             >
               ← Back to Homepage
             </Link>

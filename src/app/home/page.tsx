@@ -37,7 +37,7 @@ export default function Home() {
           categories={categories}
           locations={locations}
           defaultFilters={defaultFilters}
-          eventsPerPage={8}
+          eventsPerPage={12}
         />
       </main>
 

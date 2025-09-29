@@ -18,7 +18,7 @@ const Footer = () => {
             <ul className="space-y-1 text-sm">
               <li>
                 <a
-                  href="/about-page"
+                  href="/about"
                   className="text-gray-400 hover:text-white transition-colors"
                 >
                   About
@@ -26,7 +26,7 @@ const Footer = () => {
               </li>
               <li>
                 <a
-                  href="/home-page"
+                  href="/home"
                   className="text-gray-400 hover:text-white transition-colors"
                 >
                   Browse Events
@@ -34,7 +34,7 @@ const Footer = () => {
               </li>
               <li>
                 <a
-                  href="/createevent-page"
+                  href="/createevent"
                   className="text-gray-400 hover:text-white transition-colors"
                 >
                   Create Event

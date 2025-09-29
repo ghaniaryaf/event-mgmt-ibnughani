@@ -4,7 +4,6 @@ import { useState, useMemo, useEffect } from 'react';
 import SearchBar from './SearchBar';
 import FilterBar from './FilterBar';
 import EventList from './EventList';
-import Pagination from './Pagination';
 import { Event, FilterOptions, PaginationInfo } from '../types/types';
 
 interface EventBrowseClientProps {
@@ -20,7 +19,7 @@ const EventBrowseClient = ({
   categories, 
   locations, 
   defaultFilters, 
-  eventsPerPage = 8 
+  eventsPerPage = 12 
 }: EventBrowseClientProps) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filters, setFilters] = useState<FilterOptions>(defaultFilters);
@@ -86,16 +85,31 @@ const EventBrowseClient = ({
 
   const paginationInfo: PaginationInfo = useMemo(() => {
     const totalEvents = filteredEvents.length;
-    const totalPages = Math.ceil(totalEvents / eventsPerPage);
+    const totalPages = Math.max(1, Math.ceil(totalEvents / eventsPerPage));
+    
+    // Validate current page is within bounds
+    const validatedCurrentPage = Math.min(Math.max(1, currentPage), totalPages);
+    
+    // If current page is out of bounds after filtering, correct it
+    if (currentPage !== validatedCurrentPage && totalPages > 0) {
+      setTimeout(() => setCurrentPage(validatedCurrentPage), 0);
+    }
+
     return {
-      currentPage,
+      currentPage: validatedCurrentPage,
       totalPages,
       totalEvents,
       eventsPerPage,
-      hasNextPage: currentPage < totalPages,
-      hasPrevPage: currentPage > 1,
+      hasNextPage: validatedCurrentPage < totalPages,
+      hasPrevPage: validatedCurrentPage > 1,
     };
   }, [filteredEvents, currentPage, eventsPerPage]);
+
+  // Handle page change with validation
+  const handlePageChange = (page: number) => {
+    const validPage = Math.max(1, Math.min(page, paginationInfo.totalPages));
+    setCurrentPage(validPage);
+  };
 
   return (
     <>
@@ -126,7 +140,47 @@ const EventBrowseClient = ({
 
         <EventList events={paginatedEvents} emptyMessage="No events match your criteria" />
 
-        <Pagination pagination={paginationInfo} onPageChange={setCurrentPage} />
+        {/* Pagination */}
+        {paginationInfo.totalPages > 1 && (
+          <div className="flex items-center justify-center space-x-4 mt-8">
+            {/* Previous Button */}
+            <button
+              onClick={() => handlePageChange(currentPage - 1)}
+              disabled={!paginationInfo.hasPrevPage}
+              className={`px-4 py-2 rounded-md border text-sm font-medium ${
+                paginationInfo.hasPrevPage
+                  ? 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50 hover:border-gray-400'
+                  : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+              } transition-colors duration-200`}
+            >
+              Previous
+            </button>
+
+            {/* Current Page / Total Pages */}
+            <div className="flex items-center space-x-1 px-3 py-2">
+              <span className="text-sm font-medium text-gray-700">
+                {paginationInfo.currentPage}
+              </span>
+              <span className="text-sm text-gray-400">/</span>
+              <span className="text-sm text-gray-600">
+                {paginationInfo.totalPages}
+              </span>
+            </div>
+
+            {/* Next Button */}
+            <button
+              onClick={() => handlePageChange(currentPage + 1)}
+              disabled={!paginationInfo.hasNextPage}
+              className={`px-4 py-2 rounded-md border text-sm font-medium ${
+                paginationInfo.hasNextPage
+                  ? 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50 hover:border-gray-400'
+                  : 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed'
+              } transition-colors duration-200`}
+            >
+              Next
+            </button>
+          </div>
+        )}
       </section>
     </>
   );

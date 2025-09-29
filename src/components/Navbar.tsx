@@ -26,19 +26,19 @@ const Navbar = () => {
           {/* Desktop Navigation Links */}
           <div className="hidden md:flex items-center space-x-8">
             <Link
-              href="/createevent-page"
+              href="/createevent"
               className="text-gray-700 hover:text-purple-600 transition-colors font-medium"
             >
               Create Event
             </Link>
             <Link
-              href="/home-page"
+              href="/home"
               className="text-gray-700 hover:text-purple-600 transition-colors font-medium"
             >
               Browse Events {/* ⭐ NEW */}
             </Link>
             <Link
-              href="/about-page"
+              href="/about"
               className="text-gray-700 hover:text-purple-600 transition-colors font-medium"
             >
               About
@@ -105,21 +105,21 @@ const Navbar = () => {
             <div className="px-2 pt-2 pb-3 space-y-1 sm:px-3 bg-white border-t border-gray-200">
               {/* Mobile Navigation Links */}
               <Link
-                href="/home-page" // ⭐ NEW
+                href="/home" // ⭐ NEW
                 className="block px-3 py-2 text-gray-700 hover:text-purple-600 hover:bg-gray-50 rounded-md font-medium transition-colors"
                 onClick={closeMobileMenu}
               >
                 Browse Events
               </Link>
               <Link
-                href="/createevent-page"
+                href="/createevent"
                 className="block px-3 py-2 text-gray-700 hover:text-purple-600 hover:bg-gray-50 rounded-md font-medium transition-colors"
                 onClick={closeMobileMenu}
               >
                 Create
               </Link>
               <Link
-                href="/about-page"
+                href="/about"
                 className="block px-3 py-2 text-gray-700 hover:text-purple-600 hover:bg-gray-50 rounded-md font-medium transition-colors"
                 onClick={closeMobileMenu}
               >

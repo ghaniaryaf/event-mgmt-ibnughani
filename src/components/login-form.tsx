@@ -12,7 +12,7 @@ export function LoginForm({
     <div className={cn("flex flex-col gap-6 relative", className)} {...props}>
       {/* Homepage button */}
       <div className="absolute left-0 top-0 p-4">
-        <a href="/home-page" className="no-underline hover:underline">
+        <a href="/home" className="no-underline hover:underline">
           ← Back to Homepage
         </a>
       </div>

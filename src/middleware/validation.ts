@@ -1,6 +1,5 @@
 import { Response, NextFunction } from 'express';
-import { body, query } from 'express-validator';
-import { validationResult } from 'express-validator/src/validation-result';
+import { body, validationResult, query } from 'express-validator';
 import { AuthRequest } from '../types';
 
 export const handleValidationErrors = (
@@ -20,6 +19,18 @@ export const handleValidationErrors = (
   next();
 };
 
+// Custom validator untuk handle form-data JSON strings
+const parseJsonIfString = (value: any) => {
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value; // Return as-is jika parsing gagal
+    }
+  }
+  return value;
+};
+
 // Auth validations
 export const validateRegister = [
   body('email').isEmail().normalizeEmail(),
@@ -34,7 +45,7 @@ export const validateLogin = [
   body('password').notEmpty(),
 ];
 
-// Event validations
+// Event validations - UPDATED untuk handle form-data
 export const validateEventCreate = [
   body('title').notEmpty().trim().isLength({ max: 200 }),
   body('description').notEmpty().trim(),
@@ -45,10 +56,61 @@ export const validateEventCreate = [
   body('endDate').isISO8601(),
   body('availableSeats').isInt({ min: 1 }),
   body('basePrice').isFloat({ min: 0 }),
-  body('ticketTypes').isArray({ min: 1 }),
-  body('ticketTypes.*.name').notEmpty().trim(),
-  body('ticketTypes.*.price').isFloat({ min: 0 }),
-  body('ticketTypes.*.quantity').isInt({ min: 1 }),
+  
+  // Custom handling untuk ticketTypes (bisa string JSON atau array)
+  body('ticketTypes')
+    .custom((value) => {
+      const parsedValue = parseJsonIfString(value);
+      if (!Array.isArray(parsedValue)) {
+        throw new Error('ticketTypes must be an array');
+      }
+      if (parsedValue.length < 1) {
+        throw new Error('ticketTypes must contain at least one ticket type');
+      }
+      return true;
+    }),
+  
+  // Validasi each ticket type item
+  body('ticketTypes.*.name')
+    .custom((value, { req }) => {
+      const ticketTypes = parseJsonIfString(req.body.ticketTypes);
+      if (Array.isArray(ticketTypes)) {
+        for (const ticket of ticketTypes) {
+          if (!ticket.name || typeof ticket.name !== 'string') {
+            throw new Error('Each ticket type must have a name');
+          }
+        }
+      }
+      return true;
+    }),
+  
+  body('ticketTypes.*.price')
+    .custom((value, { req }) => {
+      const ticketTypes = parseJsonIfString(req.body.ticketTypes);
+      if (Array.isArray(ticketTypes)) {
+        for (const ticket of ticketTypes) {
+          if (typeof ticket.price !== 'number' || ticket.price < 0) {
+            throw new Error('Each ticket type must have a valid price');
+          }
+        }
+      }
+      return true;
+    }),
+  
+  body('ticketTypes.*.quantity')
+    .custom((value, { req }) => {
+      const ticketTypes = parseJsonIfString(req.body.ticketTypes);
+      if (Array.isArray(ticketTypes)) {
+        for (const ticket of ticketTypes) {
+          if (typeof ticket.quantity !== 'number' || ticket.quantity < 1) {
+            throw new Error('Each ticket type must have a valid quantity (min 1)');
+          }
+        }
+      }
+      return true;
+    }),
+
+  body('imageUrl').optional().isURL(),
 ];
 
 export const validateEventUpdate = [
@@ -61,6 +123,7 @@ export const validateEventUpdate = [
   body('endDate').optional().isISO8601(),
   body('availableSeats').optional().isInt({ min: 1 }),
   body('basePrice').optional().isFloat({ min: 0 }),
+  body('imageUrl').optional().isURL(),
 ];
 
 // Transaction validations
@@ -78,7 +141,7 @@ export const validateTransactionCreate = [
 export const validateReviewCreate = [
   body('rating').isInt({ min: 1, max: 5 }),
   body('comment').optional().trim().isLength({ max: 1000 }),
-  body('transactionId').isUUID(),  // Required untuk validasi attendance
+  body('transactionId').isUUID(),
 ];
 
 // Query validations

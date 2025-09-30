@@ -1,5 +1,7 @@
 import multer from 'multer';
 import { uploadToCloudinary } from '../utils/cloudinary';
+import { v4 as uuidv4 } from 'uuid';
+
 
 // Memory storage untuk Cloudinary
 const storage = multer.memoryStorage();
@@ -21,3 +23,5 @@ export const upload = multer({
 });
 
 export const uploadPaymentProof = upload.single('paymentProof');
+export const uploadEventImage = upload.single('eventImage');
+export const uploadProfilePicture = upload.single('profilePicture');

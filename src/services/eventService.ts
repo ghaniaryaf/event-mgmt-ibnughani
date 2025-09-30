@@ -1,6 +1,7 @@
 import { Prisma, Event, EventTicketType } from '@prisma/client';
 import { prisma } from '../utils/prisma';
-import { EventFilterParams } from '../types/index';
+import { EventFilterParams } from '../types';
+import { uploadToCloudinary } from '../utils/cloudinary';
 
 export class EventService {
   async getEvents(filters: EventFilterParams) {
@@ -142,30 +143,93 @@ export class EventService {
   }
 
   async createEvent(
-    organizerId: string,
-    eventData: Omit<Event, 'id' | 'organizerId' | 'createdAt' | 'updatedAt'>,
-    ticketTypes: Omit<EventTicketType, 'id' | 'eventId' | 'soldQuantity' | 'createdAt' | 'updatedAt'>[]
-  ) {
-    return prisma.$transaction(async (tx) => {
-      const event = await tx.event.create({
-        data: {
-          ...eventData,
-          organizerId,
-        },
-      });
+  organizerId: string,
+  eventData: {
+    title: string;
+    description: string;
+    category: string;
+    location: string;
+    address: string;
+    startDate: Date;
+    endDate: Date;
+    availableSeats: number;
+    basePrice: number;
+    isPublished: boolean;
+    imageUrl?: string;
+  },
+  ticketTypes: {
+    name: string;
+    price: number;
+    quantity: number;
+    description?: string;
+  }[],
+  imageFile?: Express.Multer.File
+) {
+  return prisma.$transaction(async (tx) => {
+    let imageUrl = eventData.imageUrl;
 
-      await tx.eventTicketType.createMany({
-        data: ticketTypes.map(ticketType => ({
-          ...ticketType,
-          eventId: event.id,
-        })),
-      });
+    // Upload image to Cloudinary if provided
+    if (imageFile) {
+      try {
+        console.log('📸 Uploading event image to Cloudinary...');
+        imageUrl = await uploadToCloudinary(imageFile);
+        console.log('Event image uploaded:', imageUrl);
+      } catch (error) {
+        console.error('Failed to upload event image:', error);
+        throw new Error('Failed to upload event image');
+      }
+    }
 
-      return event;
+    const event = await tx.event.create({
+      data: {
+        title: eventData.title,
+        description: eventData.description,
+        category: eventData.category,
+        location: eventData.location,
+        address: eventData.address,
+        startDate: eventData.startDate,
+        endDate: eventData.endDate,
+        availableSeats: eventData.availableSeats, // Number
+        basePrice: eventData.basePrice, // Number
+        isPublished: eventData.isPublished, // Boolean
+        imageUrl,
+        organizerId,
+      },
     });
-  }
 
-  async updateEvent(id: string, organizerId: string, updateData: Partial<Event>) {
+    await tx.eventTicketType.createMany({
+      data: ticketTypes.map(ticketType => ({
+        name: ticketType.name,
+        price: ticketType.price, // Number
+        quantity: ticketType.quantity, // Number
+        description: ticketType.description,
+        eventId: event.id,
+      })),
+    });
+
+    return event;
+  });
+}
+
+  async updateEvent(
+    id: string, 
+    organizerId: string, 
+    updateData: Partial<Event>,
+    imageFile?: Express.Multer.File
+  ) {
+    // Upload new image if provided
+    if (imageFile) {
+      try {
+        console.log('Uploading updated event image to Cloudinary...');
+        const imageUrl = await uploadToCloudinary(imageFile);
+        updateData.imageUrl = imageUrl;
+        console.log('Event image updated:', imageUrl);
+      } catch (error) {
+        console.error('Failed to upload event image:', error);
+        throw new Error('Failed to upload event image');
+      }
+    }
+
     return prisma.event.update({
       where: { id, organizerId },
       data: updateData,
@@ -275,5 +339,28 @@ export class EventService {
         ticketSales,
       },
     };
+  }
+
+  // New method to update event image only
+  async updateEventImage(eventId: string, organizerId: string, imageFile: Express.Multer.File) {
+    // Verify event belongs to organizer
+    const event = await prisma.event.findFirst({
+      where: { id: eventId, organizerId },
+    });
+
+    if (!event) {
+      throw new Error('Event not found or access denied');
+    }
+
+    // Upload new image
+    const imageUrl = await uploadToCloudinary(imageFile);
+
+    // Update event with new image
+    const updatedEvent = await prisma.event.update({
+      where: { id: eventId },
+      data: { imageUrl },
+    });
+
+    return updatedEvent;
   }
 }

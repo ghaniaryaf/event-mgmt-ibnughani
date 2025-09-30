@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { prisma } from '../utils/prisma';
 import { generateReferralCode, generateCouponCode, addMonths } from '../utils/helpers';
 import { RegisterRequest, LoginRequest } from '../types';
+import { sendWelcomeEmail } from '../utils/email';
 
 export class AuthService {
   // Helper untuk generate JWT
@@ -72,6 +73,15 @@ export class AuthService {
 
       // Generate token
       const token = this.generateToken({ id: user.id, email: user.email, role: user.role });
+
+      // Send welcome email (non-blocking)
+      try {
+        await sendWelcomeEmail(user.email, user.fullName);
+        console.log('✅ Welcome email sent to:', user.email);
+      } catch (emailError) {
+        console.error('❌ Failed to send welcome email:', emailError);
+        // Don't throw error, just log it
+      }
 
       return {
         user: { id: user.id, email: user.email, fullName: user.fullName, role: user.role, referralCode: user.referralCode },

@@ -3,6 +3,7 @@ import { prisma } from '../utils/prisma';
 import { generateInvoiceNumber, calculateDiscount, addHours } from '../utils/helpers';
 import { TransactionCreateRequest } from '../types';
 import { uploadToCloudinary } from '../utils/cloudinary';
+import { sendTransactionCreatedEmail, sendTransactionConfirmedEmail } from '../utils/email';
 
 export class TransactionService {
   // ================== CREATE TRANSACTION ==================
@@ -112,6 +113,7 @@ export class TransactionService {
         include: {
           items: true,
           event: { select: { title: true, organizer: { select: { fullName: true, email: true } } } },
+          user: { select: { email: true, fullName: true } }, // Include user data for email
         },
       });
 
@@ -132,6 +134,15 @@ export class TransactionService {
 
       // Deduct points
       if (pointsUsed > 0) await this.deductPoints(tx, userId, pointsDiscount);
+
+      // Send transaction created email (non-blocking)
+      try {
+        await sendTransactionCreatedEmail(transaction.user.email, transaction);
+        console.log('Transaction email sent to:', transaction.user.email);
+      } catch (emailError) {
+        console.error('Failed to send transaction email:', emailError);
+        // Don't throw error, just log it
+      }
 
       return transaction;
     });
@@ -158,7 +169,10 @@ export class TransactionService {
     return prisma.$transaction(async (tx) => {
       const transaction = await tx.transaction.findFirst({
         where: { id: transactionId, event: { organizerId }, status: 'WAITING_FOR_CONFIRMATION' },
-        include: { event: true, user: true },
+        include: { 
+          event: true, 
+          user: { select: { email: true, fullName: true } } // Include user data
+        },
       });
       if (!transaction) throw new Error('Transaction not found or invalid status');
 
@@ -181,7 +195,25 @@ export class TransactionService {
         await this.rollbackTransaction(tx, transactionId);
       }
 
-      return tx.transaction.update({ where: { id: transactionId }, data: { status: newStatus } });
+      const updatedTransaction = await tx.transaction.update({ 
+        where: { id: transactionId }, 
+        data: { status: newStatus },
+        include: {
+          event: { select: { title: true } },
+          user: { select: { email: true, fullName: true } }
+        }
+      });
+
+      // Send transaction confirmation email (non-blocking)
+      try {
+        await sendTransactionConfirmedEmail(updatedTransaction.user.email, updatedTransaction, isAccepted);
+        console.log('Transaction confirmation email sent to:', updatedTransaction.user.email);
+      } catch (emailError) {
+        console.error('Failed to send transaction confirmation email:', emailError);
+        // Don't throw error, just log it
+      }
+
+      return updatedTransaction;
     });
   }
 

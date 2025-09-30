@@ -6,6 +6,7 @@ import {
   updateEvent,
   getOrganizerEvents,
   getEventAnalytics,
+  updateEventImage
 } from '../controllers/eventController';
 import {
   validateEventCreate,
@@ -14,6 +15,7 @@ import {
   handleValidationErrors,
 } from '../middleware/validation';
 import { authenticate, authorize, optionalAuth } from '../middleware/auth';
+import { uploadEventImage } from '../middleware/upload';
 
 const router = Router();
 
@@ -28,6 +30,7 @@ router.use(authenticate);
 router.post(
   '/',
   authorize('ORGANIZER'),
+  uploadEventImage,
   validateEventCreate,
   handleValidationErrors,
   createEvent
@@ -35,10 +38,19 @@ router.post(
 router.put(
   '/:id',
   authorize('ORGANIZER'),
+  uploadEventImage,
   validateEventUpdate,
   handleValidationErrors,
   updateEvent
 );
+
+router.patch(
+  '/:id/image',
+  authorize('ORGANIZER'),
+  uploadEventImage,
+  updateEventImage
+);
+
 router.get('/organizer/my-events', authorize('ORGANIZER'), getOrganizerEvents);
 router.get('/:id/analytics', authorize('ORGANIZER'), getEventAnalytics);
 

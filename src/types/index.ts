@@ -1,18 +1,21 @@
-export interface User {
-  id: string;
-  email: string;
-  full_name: string;
-  role: 'customer' | 'organizer';
-  referral_code: string;
-  profile_picture?: string;
+import { Request } from 'express';
+import { UserRole, TransactionStatus, DiscountType } from '@prisma/client';
+
+export interface AuthRequest extends Request {
+  user?: {
+    id: string;
+    email: string;
+    role: UserRole;
+  };
 }
 
 export interface RegisterRequest {
   email: string;
   password: string;
-  full_name: string;
-  phone_number?: string;
-  referral_code?: string;
+  fullName: string;
+  phoneNumber?: string;
+  address?: string;
+  referralCode?: string;
 }
 
 export interface LoginRequest {
@@ -20,13 +23,83 @@ export interface LoginRequest {
   password: string;
 }
 
-export interface AuthResponse {
-  user: User;
-  token: string;
+export interface EventCreateRequest {
+  title: string;
+  description: string;
+  category: string;
+  location: string;
+  address: string;
+  startDate: Date;
+  endDate: Date;
+  imageUrl?: string;
+  availableSeats: number;
+  basePrice: number;
+  ticketTypes: TicketTypeCreateRequest[];
 }
 
-export interface ProfileUpdateRequest {
-  full_name?: string;
-  phone_number?: string;
-  profile_picture?: string;
+export interface TicketTypeCreateRequest {
+  name: string;
+  price: number;
+  quantity: number;
+  description?: string;
+}
+
+export interface EventVoucherCreateRequest {
+  code: string;
+  discountType: DiscountType;
+  discountValue: number;
+  maxUsage: number;
+  minPurchaseAmount?: number;
+  startDate: Date;
+  endDate: Date;
+}
+
+export interface TransactionCreateRequest {
+  eventId: string;
+  ticketTypes: {
+    ticketTypeId: string;
+    quantity: number;
+  }[];
+  pointsUsed?: number;
+  voucherCode?: string;
+  couponCode?: string;
+}
+
+export interface ReviewCreateRequest {
+  rating: number;
+  comment?: string;
+}
+
+export interface PaginationParams {
+  page?: number;
+  limit?: number;
+  search?: string;
+  category?: string;
+  location?: string;
+}
+
+export interface EventFilterParams extends PaginationParams {
+  startDate?: Date;
+  endDate?: Date;
+  minPrice?: number;
+  maxPrice?: number;
+}
+
+export interface ApiResponse<T = any> {
+  success: boolean;
+  message: string;
+  data?: T;
+  pagination?: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+}
+
+export interface DashboardStats {
+  totalEvents: number;
+  totalTransactions: number;
+  totalRevenue: number;
+  upcomingEvents: number;
 }

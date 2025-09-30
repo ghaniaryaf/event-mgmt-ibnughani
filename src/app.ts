@@ -2,12 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
-import dotenv from 'dotenv';
-
-import authRoutes from './routes/auth';
-import dashboardRoutes from './routes/dashboard';
-
-dotenv.config();
+import path from 'path';
+import routes from './routes';
 
 const app = express();
 
@@ -15,27 +11,40 @@ const app = express();
 app.use(helmet());
 app.use(cors());
 app.use(morgan('combined'));
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
+
+// Static files
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 // Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/dashboard', dashboardRoutes);
+app.use('/api', routes);
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+  res.status(200).json({
+    success: true,
+    message: 'Server is running',
+    timestamp: new Date().toISOString(),
+  });
 });
 
-// Error handling
-app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Something went wrong!' });
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: 'Route not found',
+  });
 });
 
-const PORT = process.env.PORT || 3000;
+// Error handler
+app.use((error: any, req: any, res: any, next: any) => {
+  console.error('Error:', error);
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  res.status(error.status || 500).json({
+    success: false,
+    message: error.message || 'Internal server error',
+  });
 });
 
 export default app;

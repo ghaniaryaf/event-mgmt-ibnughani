@@ -31,7 +31,7 @@ export class TransactionService {
             }
           } 
         },
-        lock: { mode: 'update' } // FIX: Lock event row
+        // lock: { mode: "forUpdate" as const } // FIX: Lock event row
       });
       
       if (!event) throw new Error('Event not found or not published');
@@ -215,7 +215,7 @@ export class TransactionService {
         amount: { gt: 0 }
       },
       orderBy: { expiryDate: 'asc' },
-      lock: { mode: 'update' }
+      // lock: { mode: 'update' }
     });
 
     const totalAvailablePoints = userPoints.reduce((sum, point) => sum + point.amount, 0);
@@ -280,7 +280,7 @@ export class TransactionService {
         endDate: { gte: new Date() },
         isDeleted: false
       },
-      lock: { mode: 'update' }
+      // lock: { mode: 'update' }
     });
     
     if (!voucher) throw new Error('Invalid or expired voucher');
@@ -328,7 +328,7 @@ export class TransactionService {
         expiryDate: { gte: new Date() } 
       },
       include: { couponTemplate: true },
-      lock: { mode: 'update' }
+      // lock: { mode: 'update' }
     });
     
     if (!coupon) throw new Error('Invalid or expired coupon');
@@ -376,7 +376,7 @@ export class TransactionService {
           user: { select: { email: true, fullName: true } },
           items: true
         },
-        lock: { mode: 'update' }
+        // lock: { mode: 'update' }
       });
       
       if (!transaction) throw new Error('Transaction not found or invalid status');
@@ -446,7 +446,7 @@ export class TransactionService {
         voucher: true, 
         coupon: true 
       },
-      lock: { mode: 'update' }
+      // lock: { mode: 'update' }
     });
     
     if (!transaction) {
@@ -585,7 +585,7 @@ export class TransactionService {
           userId,
           status: 'WAITING_FOR_PAYMENT' as TransactionStatus,
         },
-        lock: { mode: 'update' }
+        // lock: { mode: 'update' }
       });
 
       if (!transaction) {
@@ -638,7 +638,7 @@ export class TransactionService {
         voucher: true,
         coupon: true,
       },
-      lock: { mode: 'update' }
+      // lock: { mode: 'update' }
     });
 
     if (!transaction || transaction.status !== 'WAITING_FOR_PAYMENT') {
@@ -966,7 +966,7 @@ export class TransactionService {
           voucher: true,
           coupon: true
         },
-        lock: { mode: 'update' }
+        // lock: { mode: 'update' }
       });
 
       if (!transaction) {

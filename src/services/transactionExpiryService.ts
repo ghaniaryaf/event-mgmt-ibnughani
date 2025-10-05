@@ -1,4 +1,4 @@
-import { PrismaClient, TransactionStatus } from '@prisma/client';
+import { PrismaClient, TransactionStatus, Prisma } from '@prisma/client';
 import cron from 'node-cron';
 import { PointService } from './pointService';
 import { VoucherService } from './voucherService';
@@ -40,7 +40,7 @@ export class TransactionExpiryService {
     const expiredTransactions = await prisma.transaction.findMany({
       where: {
         status: 'PENDING' as TransactionStatus, // FIX: Type assertion
-        expiresAt: { lt: new Date() },
+        expiryTime: { lt: new Date() },
         isDeleted: false // FIX: Exclude deleted transactions
       },
       include: {
@@ -73,7 +73,7 @@ export class TransactionExpiryService {
           id: transaction.id,
           status: 'PENDING' as TransactionStatus // Double check status
         },
-        lock: { mode: 'update' }
+        // lock: { prisma.TransactionLockMode.forUpdate } // FIX: Lock the row
       });
 
       if (!lockedTransaction) {
@@ -203,7 +203,7 @@ export class TransactionExpiryService {
       prisma.transaction.count({
         where: {
           status: 'PENDING' as TransactionStatus,
-          expiresAt: { gt: now },
+          expiryTime: { gt: now },
           isDeleted: false
         }
       }),
@@ -223,14 +223,14 @@ export class TransactionExpiryService {
       prisma.transaction.findFirst({
         where: {
           status: 'PENDING' as TransactionStatus,
-          expiresAt: { gt: now },
+          expiryTime: { gt: now },
           isDeleted: false
         },
         select: {
-          expiresAt: true
+          expiryTime: true
         },
         orderBy: {
-          expiresAt: 'asc'
+          expiryTime: 'asc'
         }
       })
     ]);
@@ -238,7 +238,7 @@ export class TransactionExpiryService {
     return {
       pendingCount,
       expiredCount,
-      nextExpiry: nextExpiry?.expiresAt || null
+      nextExpiry: nextExpiry?.expiryTime || null
     };
   }
 
@@ -277,7 +277,7 @@ export class TransactionExpiryService {
     return await prisma.transaction.findMany({
       where: {
         status: 'PENDING' as TransactionStatus,
-        expiresAt: { 
+        expiryTime: { 
           lte: expiryThreshold,
           gt: new Date() // Still valid but expiring soon
         },
@@ -310,7 +310,7 @@ export class TransactionExpiryService {
         }
       },
       orderBy: {
-        expiresAt: 'asc'
+        expiryTime: 'asc'
       }
     });
   }

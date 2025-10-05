@@ -68,6 +68,7 @@ model Event {
   deletedAt       DateTime?   // FIX: Track when event was deleted
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
+  version         Int         @default(1) // FIX: Optimistic locking version
 
   // Relations
   organizer       User        @relation(fields: [organizerId], references: [id], onDelete: Cascade)
@@ -97,6 +98,7 @@ model EventTicketType {
   description       String?
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
+  version           Int       @default(1) // FIX: Optimistic locking version
 
   // Relations
   event             Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
@@ -123,6 +125,7 @@ model EventVoucher {
   deletedAt           DateTime?     // FIX: Track deletion timestamp
   createdAt           DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
+  version             Int           @default(1) // FIX: Optimistic locking version
 
   // Relations
   event               Event         @relation(fields: [eventId], references: [id], onDelete: Cascade)
@@ -154,6 +157,9 @@ model Transaction {
   failureReason       String?           // FIX: Add failure reason for rejected/expired transactions
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @updatedAt
+  isDeleted           Boolean           @default(false) // FIX: Soft delete flag
+  deletedAt           DateTime?         // FIX: Track deletion timestamp
+  version             Int               @default(1) // FIX: Optimistic locking version
 
   // Relations
   user                User              @relation(fields: [userId], references: [id], onDelete: Cascade)

@@ -279,7 +279,7 @@ export class VoucherService {
           endDate: { gte: now },
           isDeleted: false
         },
-        lock: { mode: 'update' }
+        // lock: { mode: 'update' }
       });
 
       if (!voucher) {
@@ -325,7 +325,7 @@ export class VoucherService {
           id: voucherId,
           isDeleted: false 
         },
-        lock: { mode: 'update' }
+        // lock: { mode: 'update' }
       });
 
       if (!voucher) {
@@ -357,7 +357,7 @@ export class VoucherService {
           id: voucherId,
           isDeleted: false 
         },
-        lock: { mode: 'update' }
+        // lock: { mode: 'update' }
       });
 
       if (!voucher) {

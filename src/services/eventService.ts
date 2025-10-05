@@ -808,7 +808,7 @@ export class EventService {
       const event = await tx.event.findUnique({
         where: { id: eventId },
         select: { availableSeats: true, bookedSeats: true },
-        lock: { mode: 'update' } // FIX: Lock untuk prevent race condition
+        // lock: { mode: 'update' } // FIX: Lock untuk prevent race condition
       });
 
       if (!event) {

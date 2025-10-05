@@ -1,11 +1,7 @@
-import { PrismaClient, TransactionStatus, Prisma } from '@prisma/client';
+import { PrismaClient, TransactionStatus } from '@prisma/client';
 import cron from 'node-cron';
-import { PointService } from './pointService';
-import { VoucherService } from './voucherService';
 
 const prisma = new PrismaClient();
-const pointService = new PointService();
-const voucherService = new VoucherService();
 
 export class TransactionExpiryService {
   private isRunning: boolean = false;
@@ -39,18 +35,24 @@ export class TransactionExpiryService {
   private async expirePendingTransactions() {
     const expiredTransactions = await prisma.transaction.findMany({
       where: {
-        status: 'PENDING' as TransactionStatus, // FIX: Type assertion
+        status: 'PENDING' as TransactionStatus,
         expiryTime: { lt: new Date() },
-        isDeleted: false // FIX: Exclude deleted transactions
+        isDeleted: false
       },
       include: {
         voucher: true,
-        items: { // FIX: Include items untuk mendapatkan quantity dan ticketTypeId
+        items: {
           include: {
             ticketType: true
           }
         },
-        coupon: true
+        coupon: true,
+        user: {
+          select: {
+            id: true,
+            latestPoint: true
+          }
+        }
       }
     });
 
@@ -67,13 +69,12 @@ export class TransactionExpiryService {
 
   private async processExpiredTransaction(transaction: any) {
     return await prisma.$transaction(async (tx) => {
-      // FIX: Lock transaction untuk prevent race condition
+      // Double check transaction status dengan optimistic locking
       const lockedTransaction = await tx.transaction.findUnique({
         where: { 
           id: transaction.id,
-          status: 'PENDING' as TransactionStatus // Double check status
-        },
-        // lock: { prisma.TransactionLockMode.forUpdate } // FIX: Lock the row
+          status: 'PENDING' as TransactionStatus
+        }
       });
 
       if (!lockedTransaction) {
@@ -83,65 +84,91 @@ export class TransactionExpiryService {
 
       // Update transaction status
       await tx.transaction.update({
-        where: { id: transaction.id },
+        where: { 
+          id: transaction.id,
+          version: transaction.version || 1
+        },
         data: { 
           status: 'EXPIRED' as TransactionStatus,
-          failureReason: 'Transaction expired automatically'
+          failureReason: 'Transaction expired automatically',
+          version: { increment: 1 }
         }
       });
 
-      // FIX: Restore event and ticket quantities menggunakan items
+      // Restore event and ticket quantities
       if (transaction.items && transaction.items.length > 0) {
         const totalTickets = transaction.items.reduce((sum: number, item: any) => sum + item.quantity, 0);
         
         console.log(`🔄 Restoring ${totalTickets} seats for event ${transaction.eventId}`);
 
-        // Restore event seats
-        await tx.event.update({
-          where: { id: transaction.eventId },
+        // Restore event seats dengan optimistic locking
+        const eventResult = await tx.event.updateMany({
+          where: { 
+            id: transaction.eventId,
+            version: transaction.event?.version || 1
+          },
           data: {
             soldQuantity: { decrement: totalTickets },
             availableSeats: { increment: totalTickets },
-            bookedSeats: { decrement: totalTickets }
+            bookedSeats: { decrement: totalTickets },
+            version: { increment: 1 }
           }
         });
+
+        if (eventResult.count === 0) {
+          console.warn(`⚠️ Event update conflict for ${transaction.eventId}`);
+        }
 
         // Restore individual ticket type quantities
         for (const item of transaction.items) {
           console.log(`🔄 Restoring ${item.quantity} tickets for ${item.ticketType.name}`);
           
-          await tx.eventTicketType.update({
-            where: { id: item.ticketTypeId },
+          const ticketResult = await tx.eventTicketType.updateMany({
+            where: { 
+              id: item.ticketTypeId,
+              version: item.ticketType.version || 1
+            },
             data: {
               soldQuantity: { decrement: item.quantity },
-              availableQuantity: { increment: item.quantity }
+              availableQuantity: { increment: item.quantity },
+              version: { increment: 1 }
             }
           });
+
+          if (ticketResult.count === 0) {
+            console.warn(`⚠️ Ticket type update conflict for ${item.ticketTypeId}`);
+          }
         }
       }
 
-      // FIX: Restore points jika digunakan
+      // Restore points jika digunakan
       if (transaction.pointsUsed > 0) {
         console.log(`🔄 Restoring ${transaction.pointsUsed} points for user ${transaction.userId}`);
         
-        await pointService.restorePointsWithLock(
-          transaction.userId,
-          transaction.pointsUsed,
-          tx
-        );
+        await this.restorePoints(tx, transaction.userId, transaction.pointsUsed);
       }
 
-      // FIX: Restore voucher usage count
+      // Restore voucher usage count
       if (transaction.voucherId) {
         console.log(`🔄 Restoring voucher usage count for voucher ${transaction.voucherId}`);
         
-        await tx.eventVoucher.update({
-          where: { id: transaction.voucherId },
-          data: { usedCount: { decrement: 1 } }
+        const voucherResult = await tx.eventVoucher.updateMany({
+          where: { 
+            id: transaction.voucherId,
+            version: transaction.voucher?.version || 1
+          },
+          data: { 
+            usedCount: { decrement: 1 },
+            version: { increment: 1 }
+          }
         });
+
+        if (voucherResult.count === 0) {
+          console.warn(`⚠️ Voucher update conflict for ${transaction.voucherId}`);
+        }
       }
 
-      // FIX: Restore coupon jika digunakan
+      // Restore coupon jika digunakan
       if (transaction.couponId) {
         console.log(`🔄 Restoring coupon ${transaction.couponId}`);
         
@@ -152,13 +179,49 @@ export class TransactionExpiryService {
       }
 
       console.log(`✅ Successfully expired transaction: ${transaction.id}`);
-    }, {
-      maxWait: 10000, // FIX: Max wait for lock
-      timeout: 30000  // FIX: Transaction timeout
     });
   }
 
-  // FIX: Manual expire transaction untuk testing atau admin purposes
+  private async restorePoints(prisma: any, userId: string, amount: number) {
+    if (amount <= 0) return;
+
+    // Create new point record untuk restore
+    await prisma.userPoint.create({ 
+      data: { 
+        userId, 
+        amount, 
+        sourceType: 'REFUND', 
+        expiryDate: this.addMonths(new Date(), 3) 
+      } 
+    });
+
+    // Update user's latest point balance
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        latestPoint: { increment: amount }
+      }
+    });
+
+    // Create point history record
+    await prisma.pointHistory.create({
+      data: {
+        userId,
+        points: amount,
+        type: 'RESTORE',
+        description: `Points restored from expired transaction`,
+        referenceId: `restore_expired_${Date.now()}`
+      }
+    });
+  }
+
+  private addMonths(date: Date, months: number): Date {
+    const result = new Date(date);
+    result.setMonth(result.getMonth() + months);
+    return result;
+  }
+
+  // Manual expire transaction untuk testing atau admin purposes
   async manuallyExpireTransaction(transactionId: string): Promise<boolean> {
     try {
       const transaction = await prisma.transaction.findUnique({
@@ -170,7 +233,12 @@ export class TransactionExpiryService {
               ticketType: true
             }
           },
-          coupon: true
+          coupon: true,
+          event: {
+            select: {
+              version: true
+            }
+          }
         }
       });
 
@@ -190,7 +258,7 @@ export class TransactionExpiryService {
     }
   }
 
-  // FIX: Get expiry statistics
+  // Get expiry statistics
   async getExpiryStats(): Promise<{
     pendingCount: number;
     expiredCount: number;
@@ -199,7 +267,6 @@ export class TransactionExpiryService {
     const now = new Date();
     
     const [pendingCount, expiredCount, nextExpiry] = await Promise.all([
-      // Count pending transactions
       prisma.transaction.count({
         where: {
           status: 'PENDING' as TransactionStatus,
@@ -208,18 +275,16 @@ export class TransactionExpiryService {
         }
       }),
       
-      // Count expired transactions (last 24 hours)
       prisma.transaction.count({
         where: {
           status: 'EXPIRED' as TransactionStatus,
           updatedAt: { 
-            gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) // Last 24 hours
+            gte: new Date(now.getTime() - 24 * 60 * 60 * 1000)
           },
           isDeleted: false
         }
       }),
       
-      // Get next expiry time
       prisma.transaction.findFirst({
         where: {
           status: 'PENDING' as TransactionStatus,
@@ -242,7 +307,7 @@ export class TransactionExpiryService {
     };
   }
 
-  // FIX: Clean up old expired transactions (housekeeping)
+  // Clean up old expired transactions (housekeeping)
   async cleanupOldExpiredTransactions(daysOld: number = 30): Promise<{ deletedCount: number }> {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - daysOld);
@@ -269,7 +334,7 @@ export class TransactionExpiryService {
     }
   }
 
-  // FIX: Check for transactions that are about to expire (for notifications)
+  // Check for transactions that are about to expire (for notifications)
   async getTransactionsExpiringSoon(minutes: number = 30): Promise<any[]> {
     const expiryThreshold = new Date();
     expiryThreshold.setMinutes(expiryThreshold.getMinutes() + minutes);
@@ -279,10 +344,9 @@ export class TransactionExpiryService {
         status: 'PENDING' as TransactionStatus,
         expiryTime: { 
           lte: expiryThreshold,
-          gt: new Date() // Still valid but expiring soon
+          gt: new Date()
         },
         isDeleted: false,
-        // FIX: Exclude transactions that already have expiry warnings sent
         expiryWarningSent: false
       },
       include: {
@@ -315,7 +379,7 @@ export class TransactionExpiryService {
     });
   }
 
-  // FIX: Mark expiry warning as sent
+  // Mark expiry warning as sent
   async markExpiryWarningSent(transactionId: string): Promise<void> {
     await prisma.transaction.update({
       where: { id: transactionId },
@@ -323,7 +387,7 @@ export class TransactionExpiryService {
     });
   }
 
-  // FIX: Health check untuk service
+  // Health check untuk service
   async healthCheck(): Promise<{ healthy: boolean; message: string; stats?: any }> {
     try {
       const stats = await this.getExpiryStats();
@@ -341,13 +405,3 @@ export class TransactionExpiryService {
     }
   }
 }
-
-// FIX: Tambahkan field expiryWarningSent di schema.prisma jika belum ada
-/*
-// Di model Transaction, tambahkan:
-model Transaction {
-  // ... existing fields
-  expiryWarningSent Boolean @default(false) // Untuk track apakah warning sudah dikirim
-  // ... rest of fields
-}
-*/

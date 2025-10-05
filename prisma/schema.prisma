@@ -96,8 +96,10 @@ model EventTicketType {
   soldQuantity      Int       @default(0)
   availableQuantity Int       @default(0) // FIX: Add available quantity for locking
   description       String?
+  isDeleted         Boolean   @default(false) // FIX: Soft delete flag
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
+  deletedAt         DateTime?             // FIX: Track when ticket type was deleted
   version           Int       @default(1) // FIX: Optimistic locking version
 
   // Relations

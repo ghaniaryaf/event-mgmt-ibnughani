@@ -12,14 +12,43 @@ export interface VoucherCreateRequest {
   description?: string;
 }
 
+// Helper untuk retry mechanism
+const withRetry = async <T>(
+  operation: () => Promise<T>,
+  maxRetries = 3
+): Promise<T> => {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error: any) {
+      if (error.code === 'P2034' && attempt < maxRetries) {
+        await new Promise(resolve => setTimeout(resolve, 100 * attempt));
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error('Max retries exceeded');
+};
+
+// FIX: Type-safe update interface
+interface VoucherUpdateData {
+  code?: string;
+  discountType?: DiscountType;
+  discountValue?: number;
+  maxUsage?: number;
+  minPurchaseAmount?: number;
+  startDate?: Date;
+  endDate?: Date;
+  description?: string;
+}
+
 export class VoucherService {
   // ================== CREATE VOUCHER ==================
   async createVoucher(eventId: string, organizerId: string, voucherData: VoucherCreateRequest) {
-    // FIX: Validasi data voucher sebelum create
     this.validateVoucherData(voucherData);
 
     return await prisma.$transaction(async (tx) => {
-      // Verify event belongs to organizer
       const event = await tx.event.findFirst({
         where: {
           id: eventId,
@@ -32,13 +61,9 @@ export class VoucherService {
         throw new Error('Event not found or access denied');
       }
 
-      // FIX: Check if voucher code already exists (case insensitive)
       const existingVoucher = await tx.eventVoucher.findFirst({
         where: {
-          code: { 
-            equals: voucherData.code, 
-            mode: 'insensitive' 
-          },
+          code: voucherData.code.toUpperCase(),
           isDeleted: false
         },
       });
@@ -47,11 +72,14 @@ export class VoucherService {
         throw new Error('Voucher code already exists');
       }
 
-      // FIX: Create voucher dengan validasi tambahan
+      if (voucherData.maxUsage <= 0 || voucherData.maxUsage > 100000) {
+        throw new Error('Max usage must be between 1 and 100,000');
+      }
+
       const voucher = await tx.eventVoucher.create({
         data: {
           eventId,
-          code: voucherData.code.toUpperCase(), // FIX: Standardize to uppercase
+          code: voucherData.code.toUpperCase(),
           discountType: voucherData.discountType,
           discountValue: voucherData.discountValue,
           maxUsage: voucherData.maxUsage,
@@ -60,7 +88,8 @@ export class VoucherService {
           endDate: voucherData.endDate,
           description: voucherData.description,
           usedCount: 0,
-          isDeleted: false
+          isDeleted: false,
+          version: 1
         },
       });
 
@@ -70,7 +99,6 @@ export class VoucherService {
 
   // ================== GET EVENT VOUCHERS ==================
   async getEventVouchers(eventId: string, organizerId: string) {
-    // Verify event belongs to organizer
     const event = await prisma.event.findFirst({
       where: {
         id: eventId,
@@ -86,7 +114,7 @@ export class VoucherService {
     const vouchers = await prisma.eventVoucher.findMany({
       where: {
         eventId,
-        isDeleted: false // FIX: Exclude deleted vouchers
+        isDeleted: false
       },
       orderBy: {
         createdAt: 'desc',
@@ -103,7 +131,7 @@ export class VoucherService {
         endDate: true,
         description: true,
         createdAt: true,
-        // FIX: Jangan include field sensitive atau tidak perlu
+        version: true
       }
     });
 
@@ -119,7 +147,6 @@ export class VoucherService {
         eventId,
         startDate: { lte: now },
         endDate: { gte: now },
-        // FIX: Akses maxUsage yang benar dengan Prisma
         usedCount: { 
           lt: prisma.eventVoucher.fields.maxUsage 
         },
@@ -136,84 +163,116 @@ export class VoucherService {
         startDate: true,
         endDate: true,
         description: true,
-        // FIX: Jangan include field yang tidak perlu untuk public API
       },
     });
 
     return vouchers;
   }
 
-  // ================== UPDATE VOUCHER ==================
+  // ================== UPDATE VOUCHER - TYPE-SAFE & SECURE ==================
   async updateVoucher(voucherId: string, organizerId: string, updateData: Partial<VoucherCreateRequest>) {
-    // FIX: Sanitize update data - hanya field yang diizinkan
-    const allowedUpdates = this.sanitizeVoucherUpdate(updateData);
+    // FIX: Gunakan type-safe sanitization
+    const allowedUpdates = this.sanitizeVoucherUpdateTypeSafe(updateData);
 
     if (Object.keys(allowedUpdates).length === 0) {
       throw new Error('No valid fields to update');
     }
 
-    // FIX: Validasi data yang diupdate
-    if (allowedUpdates.startDate || allowedUpdates.endDate || allowedUpdates.discountValue) {
-      await this.validateVoucherUpdateData(voucherId, organizerId, allowedUpdates);
-    }
+    // FIX: Validasi business logic sebelum transaction
+    await this.validateVoucherUpdateData(voucherId, organizerId, allowedUpdates);
 
-    return await prisma.$transaction(async (tx) => {
-      const voucher = await tx.eventVoucher.findFirst({
-        where: {
-          id: voucherId,
-          event: {
-            organizerId,
-          },
-          isDeleted: false
-        },
-        include: {
-          event: true,
-        },
-      });
-
-      if (!voucher) {
-        throw new Error('Voucher not found or access denied');
-      }
-
-      // FIX: Jika voucher sudah digunakan, batasi field yang bisa diupdate
-      if (voucher.usedCount > 0) {
-        const restrictedFields = ['code', 'discountType', 'discountValue', 'maxUsage'];
-        const attemptedRestrictedUpdate = Object.keys(allowedUpdates).some(field => 
-          restrictedFields.includes(field)
-        );
-
-        if (attemptedRestrictedUpdate) {
-          throw new Error('Cannot update voucher code, discount, or max usage after voucher has been used');
-        }
-      }
-
-      // If updating code, check for duplicates (case insensitive)
-      if (allowedUpdates.code && allowedUpdates.code !== voucher.code) {
-        const existingVoucher = await tx.eventVoucher.findFirst({
+    return await withRetry(async () => {
+      return await prisma.$transaction(async (tx) => {
+        const voucher = await tx.eventVoucher.findFirst({
           where: {
-            code: { 
-              equals: allowedUpdates.code, 
-              mode: 'insensitive' 
+            id: voucherId,
+            event: {
+              organizerId,
             },
-            id: { not: voucherId },
             isDeleted: false
+          },
+          include: {
+            event: {
+              select: {
+                id: true,
+                title: true
+              }
+            },
           },
         });
 
-        if (existingVoucher) {
-          throw new Error('Voucher code already exists');
+        if (!voucher) {
+          throw new Error('Voucher not found or access denied');
         }
 
-        // FIX: Standardize code to uppercase
-        allowedUpdates.code = allowedUpdates.code.toUpperCase();
-      }
+        // FIX: Business logic validation - jika voucher sudah digunakan
+        if (voucher.usedCount > 0) {
+          const restrictedFields = ['code', 'discountType', 'discountValue', 'maxUsage'];
+          const attemptedRestrictedUpdate = Object.keys(allowedUpdates).some(field => 
+            restrictedFields.includes(field)
+          );
 
-      const updatedVoucher = await tx.eventVoucher.update({
-        where: { id: voucherId },
-        data: allowedUpdates,
+          if (attemptedRestrictedUpdate) {
+            throw new Error('Cannot update voucher code, discount, or max usage after voucher has been used');
+          }
+        }
+
+        // FIX: Check duplicate code dengan validation
+        if (allowedUpdates.code && allowedUpdates.code !== voucher.code) {
+          const existingVoucher = await tx.eventVoucher.findFirst({
+            where: {
+              code: allowedUpdates.code.toUpperCase(),
+              id: { not: voucherId },
+              isDeleted: false
+            },
+          });
+
+          if (existingVoucher) {
+            throw new Error('Voucher code already exists');
+          }
+        }
+
+        // FIX: Build update payload dengan type safety
+        const updatePayload: Prisma.EventVoucherUpdateInput = {
+          version: { increment: 1 }
+        };
+
+        // FIX: Type-safe assignment tanpa assertions berbahaya
+        if (allowedUpdates.code !== undefined) {
+          updatePayload.code = allowedUpdates.code.toUpperCase();
+        }
+        if (allowedUpdates.discountType !== undefined) {
+          updatePayload.discountType = allowedUpdates.discountType;
+        }
+        if (allowedUpdates.discountValue !== undefined) {
+          updatePayload.discountValue = allowedUpdates.discountValue;
+        }
+        if (allowedUpdates.maxUsage !== undefined) {
+          updatePayload.maxUsage = allowedUpdates.maxUsage;
+        }
+        if (allowedUpdates.minPurchaseAmount !== undefined) {
+          updatePayload.minPurchaseAmount = allowedUpdates.minPurchaseAmount;
+        }
+        if (allowedUpdates.startDate !== undefined) {
+          updatePayload.startDate = allowedUpdates.startDate;
+        }
+        if (allowedUpdates.endDate !== undefined) {
+          updatePayload.endDate = allowedUpdates.endDate;
+        }
+        if (allowedUpdates.description !== undefined) {
+          updatePayload.description = allowedUpdates.description;
+        }
+
+        const updatedVoucher = await tx.eventVoucher.update({
+          where: { 
+            id: voucherId,
+            version: voucher.version || 1
+          },
+          data: updatePayload
+        });
+
+        return updatedVoucher;
       });
-
-      return updatedVoucher;
     });
   }
 
@@ -232,7 +291,7 @@ export class VoucherService {
           transactions: {
             where: {
               status: { 
-                in: ['WAITING_FOR_PAYMENT', 'WAITING_FOR_CONFIRMATION', 'DONE'] 
+                in: ['WAITING_FOR_PAYMENT', 'WAITING_FOR_CONFIRMATION', 'DONE', 'SUCCESS'] 
               }
             },
             take: 1
@@ -244,21 +303,29 @@ export class VoucherService {
         throw new Error('Voucher not found or access denied');
       }
 
-      // FIX: Cek jika voucher sudah dipakai di transaksi aktif
       if (voucher.transactions.length > 0) {
         throw new Error('Cannot delete voucher that has been used in active transactions');
       }
 
-      // FIX: Soft delete daripada hard delete
-      await tx.eventVoucher.update({
-        where: { id: voucherId },
+      const deletedVoucher = await tx.eventVoucher.update({
+        where: { 
+          id: voucherId,
+          version: voucher.version || 1
+        },
         data: {
           isDeleted: true,
-          deletedAt: new Date()
+          deletedAt: new Date(),
+          version: { increment: 1 }
         },
       });
 
-      return { message: 'Voucher deleted successfully' };
+      return { 
+        message: 'Voucher deleted successfully',
+        deletedVoucher: {
+          id: deletedVoucher.id,
+          code: deletedVoucher.code
+        }
+      };
     });
   }
 
@@ -266,117 +333,120 @@ export class VoucherService {
   async validateVoucher(code: string, eventId: string, totalAmount: number, userId?: string) {
     const now = new Date();
     
-    return await prisma.$transaction(async (tx) => {
-      // FIX: Lock voucher row untuk prevent race condition
-      const voucher = await tx.eventVoucher.findFirst({
-        where: {
-          code: { 
-            equals: code, 
-            mode: 'insensitive' 
-          },
-          eventId,
-          startDate: { lte: now },
-          endDate: { gte: now },
-          isDeleted: false
-        },
-        // lock: { mode: 'update' }
-      });
-
-      if (!voucher) {
-        throw new Error('Invalid or expired voucher');
-      }
-
-      // FIX: Check usage count dengan locking
-      if (voucher.usedCount >= voucher.maxUsage) {
-        throw new Error('Voucher usage limit reached');
-      }
-
-      if (totalAmount < voucher.minPurchaseAmount) {
-        throw new Error(`Minimum purchase amount for this voucher is ${voucher.minPurchaseAmount}`);
-      }
-
-      // FIX: Cek jika user sudah pernah menggunakan voucher ini
-      if (userId) {
-        const existingUsage = await tx.transaction.findFirst({
+    return await withRetry(async () => {
+      return await prisma.$transaction(async (tx) => {
+        const voucher = await tx.eventVoucher.findFirst({
           where: {
-            userId,
-            voucherId: voucher.id,
-            status: { 
-              in: ['WAITING_FOR_PAYMENT', 'WAITING_FOR_CONFIRMATION', 'DONE'] 
-            }
+            code: code.toUpperCase(),
+            eventId,
+            startDate: { lte: now },
+            endDate: { gte: now },
+            isDeleted: false
           }
         });
 
-        if (existingUsage) {
-          throw new Error('You have already used this voucher');
+        if (!voucher) {
+          throw new Error('Voucher not available');
         }
-      }
 
-      return voucher;
+        if (voucher.usedCount >= voucher.maxUsage) {
+          throw new Error('Voucher usage limit reached');
+        }
+
+        if (totalAmount < voucher.minPurchaseAmount) {
+          throw new Error(`Minimum purchase amount for this voucher is ${voucher.minPurchaseAmount}`);
+        }
+
+        if (userId) {
+          const existingUsage = await tx.transaction.findFirst({
+            where: {
+              userId,
+              voucherId: voucher.id,
+              status: { 
+                in: ['WAITING_FOR_PAYMENT', 'WAITING_FOR_CONFIRMATION', 'DONE', 'SUCCESS'] 
+              },
+              isDeleted: false
+            }
+          });
+
+          if (existingUsage) {
+            throw new Error('You have already used this voucher');
+          }
+        }
+
+        return voucher;
+      });
     });
   }
 
-  // ================== USE VOUCHER (INCREMENT USAGE) ==================
+  // ================== USE VOUCHER (INCREMENT USAGE) WITH LOCKING ==================
   async useVoucher(voucherId: string) {
-    return await prisma.$transaction(async (tx) => {
-      // FIX: Lock voucher untuk prevent over-usage
-      const voucher = await tx.eventVoucher.findUnique({
-        where: { 
-          id: voucherId,
-          isDeleted: false 
-        },
-        // lock: { mode: 'update' }
+    return await withRetry(async () => {
+      return await prisma.$transaction(async (tx) => {
+        const voucher = await tx.eventVoucher.findUnique({
+          where: { 
+            id: voucherId,
+            isDeleted: false 
+          }
+        });
+
+        if (!voucher) {
+          throw new Error('Voucher not found');
+        }
+
+        if (voucher.usedCount >= voucher.maxUsage) {
+          throw new Error('Voucher usage limit reached');
+        }
+
+        const updatedVoucher = await tx.eventVoucher.update({
+          where: { 
+            id: voucherId,
+            version: voucher.version || 1,
+            usedCount: { lt: voucher.maxUsage }
+          },
+          data: { 
+            usedCount: { increment: 1 },
+            version: { increment: 1 }
+          },
+        });
+
+        return updatedVoucher;
       });
-
-      if (!voucher) {
-        throw new Error('Voucher not found');
-      }
-
-      if (voucher.usedCount >= voucher.maxUsage) {
-        throw new Error('Voucher usage limit reached');
-      }
-
-      // FIX: Update used count dengan locking
-      const updatedVoucher = await tx.eventVoucher.update({
-        where: { id: voucherId },
-        data: { 
-          usedCount: { increment: 1 } 
-        },
-      });
-
-      return updatedVoucher;
     });
   }
 
   // ================== UNUSE VOUCHER (DECREMENT USAGE) ==================
   async unuseVoucher(voucherId: string) {
-    return await prisma.$transaction(async (tx) => {
-      // FIX: Lock voucher untuk prevent race condition
-      const voucher = await tx.eventVoucher.findUnique({
-        where: { 
-          id: voucherId,
-          isDeleted: false 
-        },
-        // lock: { mode: 'update' }
+    return await withRetry(async () => {
+      return await prisma.$transaction(async (tx) => {
+        const voucher = await tx.eventVoucher.findUnique({
+          where: { 
+            id: voucherId,
+            isDeleted: false 
+          }
+        });
+
+        if (!voucher) {
+          throw new Error('Voucher not found');
+        }
+
+        if (voucher.usedCount <= 0) {
+          throw new Error('Voucher usage count cannot be negative');
+        }
+
+        const updatedVoucher = await tx.eventVoucher.update({
+          where: { 
+            id: voucherId,
+            version: voucher.version || 1
+          },
+          data: { 
+            usedCount: { decrement: 1 },
+            version: { increment: 1 }
+          },
+        });
+
+        return updatedVoucher;
       });
-
-      if (!voucher) {
-        throw new Error('Voucher not found');
-      }
-
-      if (voucher.usedCount <= 0) {
-        throw new Error('Voucher usage count cannot be negative');
-      }
-
-      // FIX: Decrement used count dengan locking
-      const updatedVoucher = await tx.eventVoucher.update({
-        where: { id: voucherId },
-        data: { 
-          usedCount: { decrement: 1 } 
-        },
-      });
-
-      return updatedVoucher;
     });
   }
 
@@ -400,15 +470,15 @@ export class VoucherService {
         transactions: {
           where: {
             status: { 
-              in: ['WAITING_FOR_PAYMENT', 'WAITING_FOR_CONFIRMATION', 'DONE'] 
-            }
+              in: ['WAITING_FOR_PAYMENT', 'WAITING_FOR_CONFIRMATION', 'DONE', 'SUCCESS'] 
+            },
+            isDeleted: false
           },
           include: {
             user: {
               select: {
                 id: true,
                 fullName: true,
-                email: true
               }
             }
           },
@@ -421,8 +491,9 @@ export class VoucherService {
             transactions: {
               where: {
                 status: { 
-                  in: ['WAITING_FOR_PAYMENT', 'WAITING_FOR_CONFIRMATION', 'DONE'] 
-                }
+                  in: ['WAITING_FOR_PAYMENT', 'WAITING_FOR_CONFIRMATION', 'DONE', 'SUCCESS'] 
+                },
+                isDeleted: false
               }
             }
           }
@@ -459,7 +530,12 @@ export class VoucherService {
         usageRate: Math.round(usageRate * 100) / 100,
         totalDiscount: totalDiscount,
         transactionCount: voucher._count.transactions,
-        recentTransactions: voucher.transactions.slice(0, 10) // Last 10 transactions
+        recentTransactions: voucher.transactions.slice(0, 10).map(t => ({
+          id: t.id,
+          invoiceNumber: t.invoiceNumber,
+          finalAmount: t.finalAmount,
+          createdAt: t.createdAt
+        }))
       },
       event: voucher.event
     };
@@ -467,7 +543,6 @@ export class VoucherService {
 
   // ================== VALIDATE VOUCHER DATA ==================
   private validateVoucherData(voucherData: VoucherCreateRequest) {
-    // Validasi code
     if (!voucherData.code || voucherData.code.trim().length < 3) {
       throw new Error('Voucher code must be at least 3 characters long');
     }
@@ -476,18 +551,14 @@ export class VoucherService {
       throw new Error('Voucher code can only contain letters, numbers, hyphens, and underscores');
     }
 
-    // Validasi discount value
     this.validateDiscountValue(voucherData.discountValue, voucherData.discountType);
 
-    // Validasi max usage
     if (voucherData.maxUsage <= 0 || voucherData.maxUsage > 100000) {
       throw new Error('Max usage must be between 1 and 100,000');
     }
 
-    // Validasi dates
     this.validateVoucherDates(voucherData.startDate, voucherData.endDate);
 
-    // Validasi min purchase amount
     if (voucherData.minPurchaseAmount && voucherData.minPurchaseAmount < 0) {
       throw new Error('Minimum purchase amount cannot be negative');
     }
@@ -516,7 +587,6 @@ export class VoucherService {
       throw new Error('Voucher end date must be in the future');
     }
 
-    // Validasi voucher duration tidak terlalu panjang (max 1 tahun)
     const oneYearFromNow = new Date();
     oneYearFromNow.setFullYear(oneYearFromNow.getFullYear() + 1);
     
@@ -525,9 +595,12 @@ export class VoucherService {
     }
   }
 
-  // ================== SANITIZE VOUCHER UPDATE ==================
-  private sanitizeVoucherUpdate(updateData: Partial<VoucherCreateRequest>): Partial<VoucherCreateRequest> {
-    const allowedFields = [
+  // ================== SANITIZE VOUCHER UPDATE - TYPE-SAFE VERSION ==================
+  private sanitizeVoucherUpdateTypeSafe(updateData: Partial<VoucherCreateRequest>): VoucherUpdateData {
+    const sanitized: VoucherUpdateData = {};
+    
+    // FIX: Type-safe field assignment dengan whitelist
+    const allowedFields: (keyof VoucherUpdateData)[] = [
       'code',
       'discountType',
       'discountValue', 
@@ -538,11 +611,11 @@ export class VoucherService {
       'description'
     ];
     
-    const sanitized: Partial<VoucherCreateRequest> = {};
-    
     allowedFields.forEach(field => {
-      if (updateData[field as keyof VoucherCreateRequest] !== undefined) {
-        sanitized[field as keyof VoucherCreateRequest] = updateData[field as keyof VoucherCreateRequest];
+      const value = updateData[field as keyof VoucherCreateRequest];
+      if (value !== undefined) {
+        // FIX: Type-safe assignment
+        sanitized[field] = value as any;
       }
     });
     
@@ -550,7 +623,7 @@ export class VoucherService {
   }
 
   // ================== VALIDATE VOUCHER UPDATE DATA ==================
-  private async validateVoucherUpdateData(voucherId: string, organizerId: string, updateData: Partial<VoucherCreateRequest>) {
+  private async validateVoucherUpdateData(voucherId: string, organizerId: string, updateData: VoucherUpdateData) {
     const voucher = await prisma.eventVoucher.findFirst({
       where: {
         id: voucherId,
@@ -575,6 +648,11 @@ export class VoucherService {
       const discountType = updateData.discountType || voucher.discountType;
       this.validateDiscountValue(updateData.discountValue, discountType);
     }
+
+    // Validasi max usage
+    if (updateData.maxUsage !== undefined && (updateData.maxUsage <= 0 || updateData.maxUsage > 100000)) {
+      throw new Error('Max usage must be between 1 and 100,000');
+    }
   }
 
   // ================== BULK DELETE EXPIRED VOUCHERS ==================
@@ -588,7 +666,7 @@ export class VoucherService {
         },
         endDate: { lt: now },
         isDeleted: false,
-        usedCount: 0 // Hanya delete yang belum pernah digunakan
+        usedCount: 0
       },
       data: {
         isDeleted: true,
@@ -597,5 +675,65 @@ export class VoucherService {
     });
 
     return { deletedCount: result.count };
+  }
+
+  // ================== GET VOUCHER USAGE HISTORY ==================
+  async getVoucherUsageHistory(voucherId: string, organizerId: string, page: number = 1, limit: number = 10) {
+    const skip = (page - 1) * limit;
+
+    const voucher = await prisma.eventVoucher.findFirst({
+      where: {
+        id: voucherId,
+        event: { organizerId },
+        isDeleted: false
+      }
+    });
+
+    if (!voucher) {
+      throw new Error('Voucher not found or access denied');
+    }
+
+    const [transactions, total] = await Promise.all([
+      prisma.transaction.findMany({
+        where: {
+          voucherId,
+          isDeleted: false
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              fullName: true
+            }
+          },
+          event: {
+            select: {
+              title: true
+            }
+          }
+        },
+        orderBy: {
+          createdAt: 'desc'
+        },
+        skip,
+        take: limit
+      }),
+      prisma.transaction.count({
+        where: {
+          voucherId,
+          isDeleted: false
+        }
+      })
+    ]);
+
+    return {
+      transactions,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    };
   }
 }

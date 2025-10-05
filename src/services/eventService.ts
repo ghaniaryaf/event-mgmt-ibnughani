@@ -19,10 +19,9 @@ export class EventService {
 
     const skip = (page - 1) * limit;
 
-    // FIX: Gunakan contains + insensitive yang benar untuk Prisma
     const filtersArray: Prisma.EventWhereInput[] = [
-      { isPublished: true }, // FIX: Tambah published filter
-      { isDeleted: false }   // FIX: Exclude deleted events
+      { isPublished: true },
+      { isDeleted: false }
     ];
 
     if (search) {
@@ -71,14 +70,29 @@ export class EventService {
               id: true,
               fullName: true,
               profilePicture: true,
-              // FIX: Jangan include email/phone untuk public API
             },
           },
-          ticketTypes: true,
+          ticketTypes: {
+            where: {
+              isDeleted: false
+            }
+          },
           _count: {
             select: {
-              reviews: true,
-              attendees: true,
+              reviews: {
+                where: {
+                  isActive: true
+                }
+              },
+              attendees: {
+                where: {
+                  transaction: {
+                    status: {
+                      in: ['DONE', 'SUCCESS', 'CONFIRMED']
+                    }
+                  }
+                }
+              },
             },
           },
         },
@@ -103,10 +117,11 @@ export class EventService {
   }
 
   async getEventById(id: string) {
-    return prisma.event.findUnique({
+    // FIX: Gunakan raw query untuk voucher validation atau approach alternatif
+    const event = await prisma.event.findUnique({
       where: { 
         id,
-        isDeleted: false // FIX: Exclude deleted events
+        isDeleted: false
       },
       include: {
         organizer: {
@@ -114,22 +129,25 @@ export class EventService {
             id: true,
             fullName: true,
             profilePicture: true,
-            // FIX: Jangan include sensitive data
           },
         },
-        ticketTypes: true,
+        ticketTypes: {
+          where: {
+            isDeleted: false
+          }
+        },
+        // FIX: Sementara exclude voucher validation yang complex
         vouchers: {
           where: {
             startDate: { lte: new Date() },
             endDate: { gte: new Date() },
-            // FIX: Akses maxUsage yang benar
-            usedCount: { 
-              lt: prisma.eventVoucher.fields.maxUsage 
-            },
             isDeleted: false,
           },
         },
         reviews: {
+          where: {
+            isActive: true
+          },
           include: {
             user: {
               select: {
@@ -143,12 +161,38 @@ export class EventService {
         },
         _count: {
           select: {
-            attendees: true,
-            reviews: true,
+            attendees: {
+              where: {
+                transaction: {
+                  status: {
+                    in: ['DONE', 'SUCCESS', 'CONFIRMED']
+                  }
+                }
+              }
+            },
+            reviews: {
+              where: {
+                isActive: true
+              }
+            },
           },
         },
       },
     });
+
+    if (!event) {
+      return null;
+    }
+
+    // FIX: Filter vouchers manually untuk usedCount < maxUsage
+    const activeVouchers = event.vouchers.filter(voucher => 
+      voucher.usedCount < voucher.maxUsage
+    );
+
+    return {
+      ...event,
+      vouchers: activeVouchers
+    };
   }
 
   // FIX: Create event dengan rollback mechanism dan validasi
@@ -175,7 +219,6 @@ export class EventService {
     }[],
     imageFile?: Express.Multer.File
   ) {
-    // FIX: Validasi data event
     this.validateEventData(eventData);
 
     let imageUrl = eventData.imageUrl;
@@ -226,11 +269,12 @@ export class EventService {
             basePrice: eventData.basePrice,
             isPublished: eventData.isPublished,
             imageUrl,
-            imagePublicId: cloudinaryPublicId, // FIX: Store public_id untuk future deletion
+            imagePublicId: cloudinaryPublicId,
             organizerId,
-            bookedSeats: 0, // Initialize
-            soldQuantity: 0, // Initialize sold quantity
+            bookedSeats: 0,
+            soldQuantity: 0,
             isDeleted: false,
+            version: 1
           },
         });
 
@@ -241,9 +285,12 @@ export class EventService {
               name: ticketType.name,
               price: ticketType.price,
               quantity: ticketType.quantity,
-              availableQuantity: ticketType.quantity, // FIX: Initialize available quantity
+              availableQuantity: ticketType.quantity,
               description: ticketType.description,
               eventId: event.id,
+              soldQuantity: 0,
+              isDeleted: false,
+              version: 1
             })),
           });
         }
@@ -272,14 +319,13 @@ export class EventService {
     updateData: Partial<Event>,
     imageFile?: Express.Multer.File
   ) {
-    // FIX: Validasi event exists dan belongs to organizer
+    // FIX: Get existing event dengan semua field yang diperlukan untuk validasi
     const existingEvent = await prisma.event.findFirst({
       where: { 
         id, 
         organizerId,
         isDeleted: false 
-      },
-      select: { imagePublicId: true }
+      }
     });
 
     if (!existingEvent) {
@@ -298,7 +344,7 @@ export class EventService {
             const uploadResult = await uploadToCloudinary(imageFile);
             updateData.imageUrl = uploadResult.secure_url;
             newImagePublicId = uploadResult.public_id;
-            (updateData as any).imagePublicId = newImagePublicId; // FIX: Type assertion
+            (updateData as any).imagePublicId = newImagePublicId;
             console.log('Event image updated:', uploadResult.secure_url);
           } catch (error) {
             console.error('Failed to upload event image:', error);
@@ -325,9 +371,25 @@ export class EventService {
           }
         }
 
+        // FIX: Validasi update data menggunakan existingEvent
+        if (updateData.startDate || updateData.endDate) {
+          const startDate = updateData.startDate || existingEvent.startDate;
+          const endDate = updateData.endDate || existingEvent.endDate;
+          if (startDate >= endDate) {
+            throw new Error('Event end date must be after start date');
+          }
+        }
+
         const updatedEvent = await tx.event.update({
-          where: { id, organizerId },
-          data: updateData,
+          where: { 
+            id, 
+            organizerId,
+            version: existingEvent.version || 1
+          },
+          data: {
+            ...updateData,
+            version: { increment: 1 }
+          },
         });
 
         // FIX: Delete old image dari Cloudinary jika upload baru berhasil
@@ -337,7 +399,6 @@ export class EventService {
             console.log('Deleted old event image from Cloudinary');
           } catch (deleteError) {
             console.error('Failed to delete old image:', deleteError);
-            // Continue - jangan throw error karena update sudah berhasil
           }
         }
 
@@ -365,15 +426,37 @@ export class EventService {
       prisma.event.findMany({
         where: { 
           organizerId,
-          isDeleted: false // FIX: Exclude deleted events
+          isDeleted: false
         },
         include: {
-          ticketTypes: true,
+          ticketTypes: {
+            where: {
+              isDeleted: false
+            }
+          },
           _count: {
             select: {
-              transactions: true,
-              attendees: true,
-              reviews: true,
+              transactions: {
+                where: {
+                  status: {
+                    in: ['DONE', 'SUCCESS', 'CONFIRMED']
+                  }
+                }
+              },
+              attendees: {
+                where: {
+                  transaction: {
+                    status: {
+                      in: ['DONE', 'SUCCESS', 'CONFIRMED']
+                    }
+                  }
+                }
+              },
+              reviews: {
+                where: {
+                  isActive: true
+                }
+              },
             },
           },
         },
@@ -412,6 +495,9 @@ export class EventService {
       },
       include: {
         ticketTypes: {
+          where: {
+            isDeleted: false
+          },
           include: {
             _count: {
               select: {
@@ -419,8 +505,9 @@ export class EventService {
                   where: {
                     transaction: {
                       status: {
-                        in: ['DONE', 'SUCCESS', 'CONFIRMED'] as TransactionStatus[]
-                      }
+                        in: ['DONE', 'SUCCESS', 'CONFIRMED']
+                      },
+                      isDeleted: false
                     }
                   }
                 },
@@ -430,7 +517,10 @@ export class EventService {
         },
         transactions: {
           where: {
-            status: { in: ['DONE', 'SUCCESS', 'CONFIRMED'] as TransactionStatus[] },
+            status: { in: ['DONE', 'SUCCESS', 'CONFIRMED'] },
+            isDeleted: false,
+            // FIX: Gunakan gte 0 untuk exclude null values
+            finalAmount: { gte: 0 }
           },
           include: {
             items: true,
@@ -439,11 +529,15 @@ export class EventService {
         attendees: {
           where: {
             transaction: {
-              status: { in: ['DONE', 'SUCCESS', 'CONFIRMED'] as TransactionStatus[] }
+              status: { in: ['DONE', 'SUCCESS', 'CONFIRMED'] },
+              isDeleted: false
             }
           }
         },
         reviews: {
+          where: {
+            isActive: true
+          },
           select: {
             rating: true,
           },
@@ -467,7 +561,6 @@ export class EventService {
         ? event.reviews.reduce((sum, review) => sum + review.rating, 0) / event.reviews.length
         : 0;
 
-    // FIX: Handle _count yang mungkin undefined
     const ticketSales = event.ticketTypes.map(ticketType => ({
       name: ticketType.name,
       sold: ticketType._count?.transactionItems || 0,
@@ -499,7 +592,6 @@ export class EventService {
 
   // FIX: Update event image dengan rollback mechanism
   async updateEventImage(eventId: string, organizerId: string, imageFile: Express.Multer.File) {
-    // Verify event belongs to organizer
     const event = await prisma.event.findFirst({
       where: { 
         id: eventId, 
@@ -517,35 +609,34 @@ export class EventService {
 
     return await prisma.$transaction(async (tx) => {
       try {
-        // Upload new image
         const uploadResult = await uploadToCloudinary(imageFile);
         const imageUrl = uploadResult.secure_url;
         newImagePublicId = uploadResult.public_id;
 
-        // Update event with new image
         const updatedEvent = await tx.event.update({
-          where: { id: eventId },
+          where: { 
+            id: eventId,
+            version: event.version || 1
+          },
           data: { 
             imageUrl,
-            imagePublicId: newImagePublicId 
+            imagePublicId: newImagePublicId,
+            version: { increment: 1 }
           },
         });
 
-        // Delete old image dari Cloudinary
         if (oldImagePublicId) {
           try {
             await deleteFromCloudinary(oldImagePublicId);
             console.log('Deleted old event image from Cloudinary');
           } catch (deleteError) {
             console.error('Failed to delete old image:', deleteError);
-            // Continue - jangan throw error
           }
         }
 
         return updatedEvent;
 
       } catch (error) {
-        // Rollback new image upload jika gagal
         if (newImagePublicId) {
           try {
             await deleteFromCloudinary(newImagePublicId);
@@ -558,7 +649,7 @@ export class EventService {
     });
   }
 
-  // FIX: Soft delete event
+  // FIX: Soft delete event dengan validasi
   async deleteEvent(eventId: string, organizerId: string): Promise<void> {
     const event = await prisma.event.findFirst({
       where: { 
@@ -569,7 +660,7 @@ export class EventService {
       include: {
         transactions: {
           where: {
-            status: { in: ['DONE', 'SUCCESS', 'CONFIRMED'] as TransactionStatus[] }
+            status: { in: ['DONE', 'SUCCESS', 'CONFIRMED'] }
           }
         }
       }
@@ -587,8 +678,21 @@ export class EventService {
     await prisma.$transaction(async (tx) => {
       // Soft delete event
       await tx.event.update({
-        where: { id: eventId },
+        where: { 
+          id: eventId,
+          version: event.version || 1
+        },
         data: { 
+          isDeleted: true,
+          deletedAt: new Date(),
+          version: { increment: 1 }
+        }
+      });
+
+      // FIX: Soft delete ticket types
+      await tx.eventTicketType.updateMany({
+        where: { eventId },
+        data: {
           isDeleted: true,
           deletedAt: new Date()
         }
@@ -601,7 +705,6 @@ export class EventService {
           console.log('Deleted event image from Cloudinary');
         } catch (error) {
           console.error('Failed to delete event image from Cloudinary:', error);
-          // Continue - jangan throw error karena soft delete sudah berhasil
         }
       }
     });
@@ -612,7 +715,6 @@ export class EventService {
     const now = new Date();
     
     const [totalEvents, publishedEvents, upcomingEvents, totalRevenue] = await Promise.all([
-      // Total events
       prisma.event.count({
         where: {
           organizerId,
@@ -620,7 +722,6 @@ export class EventService {
         }
       }),
       
-      // Published events
       prisma.event.count({
         where: {
           organizerId,
@@ -629,7 +730,6 @@ export class EventService {
         }
       }),
       
-      // Upcoming events
       prisma.event.count({
         where: {
           organizerId,
@@ -638,14 +738,15 @@ export class EventService {
         }
       }),
       
-      // Total revenue
+      // FIX: Revenue calculation yang aman - gunakan gte 0 untuk exclude null values
       prisma.transaction.aggregate({
         where: {
           event: {
             organizerId,
             isDeleted: false
           },
-          status: { in: ['DONE', 'SUCCESS', 'CONFIRMED'] as TransactionStatus[] }
+          status: { in: ['DONE', 'SUCCESS', 'CONFIRMED'] },
+          finalAmount: { gte: 0 }
         },
         _sum: {
           finalAmount: true
@@ -684,7 +785,6 @@ export class EventService {
       ]
     };
 
-    // Apply additional filters
     if (filters.category) {
       (where.AND as Prisma.EventWhereInput[]).push({
         category: { contains: filters.category, mode: 'insensitive' }
@@ -732,20 +832,35 @@ export class EventService {
           },
         },
         ticketTypes: {
+          where: {
+            isDeleted: false
+          },
           orderBy: { price: 'asc' },
-          take: 1 // Get cheapest ticket for display
+          take: 1
         },
         _count: {
           select: {
-            reviews: true,
-            attendees: true,
+            reviews: {
+              where: {
+                isActive: true
+              }
+            },
+            attendees: {
+              where: {
+                transaction: {
+                  status: {
+                    in: ['DONE', 'SUCCESS', 'CONFIRMED']
+                  }
+                }
+              }
+            },
           },
         },
       },
       orderBy: {
         startDate: 'asc'
       },
-      take: 50 // Limit results
+      take: 50
     });
   }
 
@@ -774,9 +889,8 @@ export class EventService {
       throw new Error('Base price cannot be negative');
     }
 
-    // FIX: Validasi dates tidak di masa lalu
     const now = new Date();
-    now.setHours(0, 0, 0, 0); // Reset time to beginning of day
+    now.setHours(0, 0, 0, 0);
     
     const startDate = new Date(eventData.startDate);
     startDate.setHours(0, 0, 0, 0);
@@ -791,8 +905,9 @@ export class EventService {
     const revenue = await prisma.transaction.aggregate({
       where: {
         eventId,
-        status: { in: ['DONE', 'SUCCESS', 'CONFIRMED'] as TransactionStatus[] },
-        finalAmount: { not: null }
+        status: { in: ['DONE', 'SUCCESS', 'CONFIRMED'] },
+        // FIX: Gunakan gte 0 untuk exclude null values
+        finalAmount: { gte: 0 }
       },
       _sum: {
         finalAmount: true
@@ -802,13 +917,16 @@ export class EventService {
     return revenue._sum?.finalAmount || 0;
   }
 
-  // FIX: Update event seats setelah transaction
+  // FIX: Update event seats dengan optimistic locking
   async updateEventSeats(eventId: string, quantity: number, operation: 'increment' | 'decrement') {
     return await prisma.$transaction(async (tx) => {
       const event = await tx.event.findUnique({
         where: { id: eventId },
-        select: { availableSeats: true, bookedSeats: true },
-        // lock: { mode: 'update' } // FIX: Lock untuk prevent race condition
+        select: { 
+          availableSeats: true, 
+          bookedSeats: true,
+          version: true 
+        }
       });
 
       if (!event) {
@@ -819,22 +937,57 @@ export class EventService {
         throw new Error('Not enough seats available');
       }
 
-      const updateData = {
-        availableSeats: operation === 'increment' 
-          ? { increment: quantity } 
-          : { decrement: quantity },
-        bookedSeats: operation === 'increment'
-          ? { decrement: quantity }
-          : { increment: quantity },
-        soldQuantity: operation === 'increment'
-          ? { decrement: quantity }
-          : { increment: quantity }
+      const updateData: Prisma.EventUpdateInput = {
+        version: { increment: 1 }
       };
 
-      return tx.event.update({
-        where: { id: eventId },
+      if (operation === 'increment') {
+        updateData.availableSeats = { increment: quantity };
+        updateData.bookedSeats = { decrement: quantity };
+        updateData.soldQuantity = { decrement: quantity };
+      } else {
+        updateData.availableSeats = { decrement: quantity };
+        updateData.bookedSeats = { increment: quantity };
+        updateData.soldQuantity = { increment: quantity };
+      }
+
+      const result = await tx.event.updateMany({
+        where: { 
+          id: eventId,
+          version: event.version || 1
+        },
         data: updateData
       });
+
+      if (result.count === 0) {
+        throw new Error('Event update conflict - please try again');
+      }
+
+      return tx.event.findUnique({
+        where: { id: eventId }
+      });
+    });
+  }
+
+  // FIX: Bulk update events status (publish/unpublish)
+  async bulkUpdateEventsStatus(organizerId: string, eventIds: string[], isPublished: boolean) {
+    return await prisma.$transaction(async (tx) => {
+      const result = await tx.event.updateMany({
+        where: {
+          id: { in: eventIds },
+          organizerId,
+          isDeleted: false
+        },
+        data: {
+          isPublished,
+          version: { increment: 1 }
+        }
+      });
+
+      return {
+        updatedCount: result.count,
+        message: `Successfully ${isPublished ? 'published' : 'unpublished'} ${result.count} events`
+      };
     });
   }
 }

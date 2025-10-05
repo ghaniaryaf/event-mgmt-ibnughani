@@ -8,10 +8,13 @@ import compression from 'compression';
 import hpp from 'hpp';
 import cookieParser from 'cookie-parser';
 import routes from './routes';
+import users from './routes/users'; // Import user routes
+import reviewRoutes from './routes/review'; // Import review routes
 import { TransactionExpiryService } from './services/transactionExpiryService';
 import { errorHandler } from './middleware/errorHandler';
 import { requestLogger } from './middleware/requestLogger';
 import { validateEnv } from './utils/envValidator';
+
 
 // Validate environment variables on startup
 validateEnv();
@@ -184,6 +187,8 @@ app.use((req, res, next) => {
 
 // API routes
 app.use('/api', routes);
+app.use('/api/users', users); // User features routes
+app.use('/api/reviews', reviewRoutes); // Review routes - TAMBAHKAN INI
 
 // ================== HEALTH CHECKS ==================
 
@@ -252,14 +257,17 @@ setTimeout(initializeServices, 5000);
 // ================== ERROR HANDLING ==================
 
 // 404 handler - untuk API routes
-app.use('/api/*', (req, res) => {
+// 404 handler - untuk API routes
+app.use(/\/api\//, (req, res) => {
   res.status(404).json({
     success: false,
     message: 'API endpoint not found',
     path: req.originalUrl,
     method: req.method,
+    suggestion: 'Check the API documentation for available endpoints'
   });
 });
+
 
 // 404 handler - untuk non-API routes
 app.use((req, res) => {
@@ -338,5 +346,7 @@ process.on('uncaughtException', (error) => {
   // Log to monitoring service
   process.exit(1);
 });
+
+app.use('/users', users);
 
 export default app;

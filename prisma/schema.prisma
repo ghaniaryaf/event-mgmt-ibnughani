@@ -255,7 +255,7 @@ model Review {
   @@index([transactionId])
   @@index([rating])
   @@index([createdAt])
-  @@unique([userId, eventId]) // FIX: Prevent multiple reviews from same user for same event
+  @@unique([userId, transactionId]) // FIX: Prevent multiple reviews from same user for same event
 }
 
 model Referral {

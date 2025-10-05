@@ -312,7 +312,7 @@ export class TransactionService {
     // Get voucher dengan optimistic locking
     const voucher = await prisma.eventVoucher.findFirst({
       where: { 
-        code: { equals: voucherCode, mode: 'insensitive' }, 
+        code: voucherCode.toUpperCase(), 
         eventId, 
         startDate: { lte: new Date() }, 
         endDate: { gte: new Date() },
@@ -345,7 +345,7 @@ export class TransactionService {
       where: { 
         id: voucher.id,
         version: voucher.version || 1,
-        usedCount: { lt: prisma.eventVoucher.fields.maxUsage }
+        usedCount: { lt: voucher.maxUsage }
       },
       data: { 
         usedCount: { increment: 1 },
@@ -838,9 +838,7 @@ export class TransactionService {
             select: { 
               id: true, 
               fullName: true, 
-              email: true, 
-              profilePicture: true,
-              phoneNumber: true
+              profilePicture: true
             } 
           },
           payment: true,

@@ -2,6 +2,23 @@ import { Prisma, Event, EventTicketType, TransactionStatus } from '@prisma/clien
 import { prisma } from '../utils/prisma';
 import { EventFilterParams } from '../types';
 import { uploadToCloudinary, deleteFromCloudinary } from '../utils/cloudinary';
+import { sendWelcomeEmail } from '../utils/email'; // Import email functions
+
+// Helper untuk case-insensitive search tanpa mode: 'insensitive'
+const createCaseInsensitiveFilter = (field: string, value: string): any => {
+  if (!value) return {};
+  
+  return {
+    OR: [
+      { [field]: { equals: value } },
+      { [field]: { equals: value.toLowerCase() } },
+      { [field]: { equals: value.toUpperCase() } },
+      { [field]: { contains: value } },
+      { [field]: { contains: value.toLowerCase() } },
+      { [field]: { contains: value.toUpperCase() } },
+    ]
+  };
+};
 
 export class EventService {
   async getEvents(filters: EventFilterParams) {
@@ -25,21 +42,24 @@ export class EventService {
     ];
 
     if (search) {
+      // FIX: Ganti mode: 'insensitive' dengan approach manual
       filtersArray.push({
         OR: [
-          { title: { contains: search, mode: 'insensitive' } },
-          { description: { contains: search, mode: 'insensitive' } },
-          { location: { contains: search, mode: 'insensitive' } },
+          this.createSearchFilter('title', search),
+          this.createSearchFilter('description', search),
+          this.createSearchFilter('location', search),
         ],
       });
     }
 
     if (category) {
-      filtersArray.push({ category: { contains: category, mode: 'insensitive' } });
+      // FIX: Ganti mode: 'insensitive' dengan approach manual
+      filtersArray.push(this.createSearchFilter('category', category));
     }
 
     if (location) {
-      filtersArray.push({ location: { contains: location, mode: 'insensitive' } });
+      // FIX: Ganti mode: 'insensitive' dengan approach manual
+      filtersArray.push(this.createSearchFilter('location', location));
     }
 
     if (startDate) {
@@ -117,7 +137,6 @@ export class EventService {
   }
 
   async getEventById(id: string) {
-    // FIX: Gunakan raw query untuk voucher validation atau approach alternatif
     const event = await prisma.event.findUnique({
       where: { 
         id,
@@ -129,6 +148,7 @@ export class EventService {
             id: true,
             fullName: true,
             profilePicture: true,
+            // FIX: Jangan expose data sensitif organizer
           },
         },
         ticketTypes: {
@@ -136,12 +156,13 @@ export class EventService {
             isDeleted: false
           }
         },
-        // FIX: Sementara exclude voucher validation yang complex
         vouchers: {
           where: {
             startDate: { lte: new Date() },
             endDate: { gte: new Date() },
             isDeleted: false,
+            // FIX: Filter usedCount < maxUsage di query level
+            usedCount: { lt: prisma.eventVoucher.fields.maxUsage }
           },
         },
         reviews: {
@@ -184,15 +205,8 @@ export class EventService {
       return null;
     }
 
-    // FIX: Filter vouchers manually untuk usedCount < maxUsage
-    const activeVouchers = event.vouchers.filter(voucher => 
-      voucher.usedCount < voucher.maxUsage
-    );
-
-    return {
-      ...event,
-      vouchers: activeVouchers
-    };
+    // FIX: Tidak perlu filter manual lagi karena sudah di query level
+    return event;
   }
 
   // FIX: Create event dengan rollback mechanism dan validasi
@@ -240,13 +254,14 @@ export class EventService {
           }
         }
 
-        // FIX: Check duplicate event title untuk organizer yang sama
+        // FIX: Check duplicate event title tanpa mode: 'insensitive'
         const existingEvent = await tx.event.findFirst({
           where: {
-            title: { 
-              contains: eventData.title, 
-              mode: 'insensitive' 
-            },
+            OR: [
+              { title: eventData.title },
+              { title: eventData.title.toLowerCase() },
+              { title: eventData.title.toUpperCase() }
+            ],
             organizerId,
             isDeleted: false
           }
@@ -295,6 +310,23 @@ export class EventService {
           });
         }
 
+        // FIX: Kirim email notifikasi ke organizer (optional)
+        try {
+          const organizer = await tx.user.findUnique({
+            where: { id: organizerId },
+            select: { email: true, fullName: true }
+          });
+          
+          if (organizer) {
+            // Anda bisa buat function email khusus untuk event creation
+            console.log(`📧 Event creation notification would be sent to: ${organizer.email}`);
+          }
+        } catch (emailError) {
+          console.error('Failed to send event creation email:', emailError);
+          // Jangan throw error, hanya log saja
+        }
+
+        console.log(`✅ Event created successfully: ${event.title} by organizer ${organizerId}`);
         return event;
 
       } catch (error) {
@@ -352,14 +384,15 @@ export class EventService {
           }
         }
 
-        // FIX: Check duplicate title (exclude current event)
-        if (updateData.title) {
+        // FIX: Check duplicate title tanpa mode: 'insensitive'
+        if (updateData.title && updateData.title !== existingEvent.title) {
           const duplicateEvent = await tx.event.findFirst({
             where: {
-              title: { 
-                contains: updateData.title, 
-                mode: 'insensitive' 
-              },
+              OR: [
+                { title: updateData.title },
+                { title: updateData.title.toLowerCase() },
+                { title: updateData.title.toUpperCase() }
+              ],
               organizerId,
               id: { not: id },
               isDeleted: false
@@ -377,6 +410,13 @@ export class EventService {
           const endDate = updateData.endDate || existingEvent.endDate;
           if (startDate >= endDate) {
             throw new Error('Event end date must be after start date');
+          }
+        }
+
+        // FIX: Validasi available seats tidak kurang dari booked seats
+        if (updateData.availableSeats !== undefined) {
+          if (updateData.availableSeats < existingEvent.bookedSeats) {
+            throw new Error(`Available seats cannot be less than booked seats (${existingEvent.bookedSeats})`);
           }
         }
 
@@ -402,6 +442,7 @@ export class EventService {
           }
         }
 
+        console.log(`✅ Event updated successfully: ${id}`);
         return updatedEvent;
 
       } catch (error) {
@@ -698,6 +739,15 @@ export class EventService {
         }
       });
 
+      // FIX: Soft delete vouchers
+      await tx.eventVoucher.updateMany({
+        where: { eventId },
+        data: {
+          isDeleted: true,
+          deletedAt: new Date()
+        }
+      });
+
       // FIX: Delete image dari Cloudinary
       if (event.imagePublicId) {
         try {
@@ -708,13 +758,15 @@ export class EventService {
         }
       }
     });
+
+    console.log(`✅ Event soft deleted: ${eventId}`);
   }
 
   // FIX: Get events statistics untuk dashboard
   async getOrganizerEventsStats(organizerId: string) {
     const now = new Date();
     
-    const [totalEvents, publishedEvents, upcomingEvents, totalRevenue] = await Promise.all([
+    const [totalEvents, publishedEvents, upcomingEvents, totalRevenue, totalAttendees] = await Promise.all([
       prisma.event.count({
         where: {
           organizerId,
@@ -751,6 +803,19 @@ export class EventService {
         _sum: {
           finalAmount: true
         }
+      }),
+      
+      // FIX: Tambah total attendees count
+      prisma.eventAttendee.count({
+        where: {
+          event: {
+            organizerId,
+            isDeleted: false
+          },
+          transaction: {
+            status: { in: ['DONE', 'SUCCESS', 'CONFIRMED'] }
+          }
+        }
       })
     ]);
 
@@ -759,11 +824,12 @@ export class EventService {
       publishedEvents,
       upcomingEvents,
       totalRevenue: totalRevenue._sum?.finalAmount || 0,
+      totalAttendees,
       draftEvents: totalEvents - publishedEvents
     };
   }
 
-  // FIX: Search events dengan advanced filtering
+  // FIX: Search events dengan advanced filtering TANPA mode: 'insensitive'
   async searchEvents(query: string, filters: {
     category?: string;
     location?: string;
@@ -776,25 +842,25 @@ export class EventService {
       AND: [
         {
           OR: [
-            { title: { contains: query, mode: 'insensitive' } },
-            { description: { contains: query, mode: 'insensitive' } },
-            { category: { contains: query, mode: 'insensitive' } },
-            { location: { contains: query, mode: 'insensitive' } },
+            this.createSearchFilter('title', query),
+            this.createSearchFilter('description', query),
+            this.createSearchFilter('category', query),
+            this.createSearchFilter('location', query),
           ]
         }
       ]
     };
 
     if (filters.category) {
-      (where.AND as Prisma.EventWhereInput[]).push({
-        category: { contains: filters.category, mode: 'insensitive' }
-      });
+      (where.AND as Prisma.EventWhereInput[]).push(
+        this.createSearchFilter('category', filters.category)
+      );
     }
 
     if (filters.location) {
-      (where.AND as Prisma.EventWhereInput[]).push({
-        location: { contains: filters.location, mode: 'insensitive' }
-      });
+      (where.AND as Prisma.EventWhereInput[]).push(
+        this.createSearchFilter('location', filters.location)
+      );
     }
 
     if (filters.dateRange) {
@@ -877,6 +943,10 @@ export class EventService {
       throw new Error('Event title must be at least 3 characters long');
     }
 
+    if (eventData.title.length > 100) {
+      throw new Error('Event title cannot exceed 100 characters');
+    }
+
     if (eventData.startDate >= eventData.endDate) {
       throw new Error('Event end date must be after start date');
     }
@@ -885,8 +955,16 @@ export class EventService {
       throw new Error('Available seats must be greater than 0');
     }
 
+    if (eventData.availableSeats > 100000) {
+      throw new Error('Available seats cannot exceed 100,000');
+    }
+
     if (eventData.basePrice < 0) {
       throw new Error('Base price cannot be negative');
+    }
+
+    if (eventData.basePrice > 100000000) {
+      throw new Error('Base price cannot exceed 100,000,000');
     }
 
     const now = new Date();
@@ -984,10 +1062,151 @@ export class EventService {
         }
       });
 
+      console.log(`✅ Bulk ${isPublished ? 'published' : 'unpublished'} ${result.count} events`);
+
       return {
         updatedCount: result.count,
         message: `Successfully ${isPublished ? 'published' : 'unpublished'} ${result.count} events`
       };
     });
+  }
+
+  // FIX: Helper method untuk case-insensitive search tanpa mode: 'insensitive'
+  private createSearchFilter(field: string, value: string): Prisma.EventWhereInput {
+    if (!value) return {};
+    
+    return {
+      OR: [
+        { [field]: { contains: value } },
+        { [field]: { contains: value.toLowerCase() } },
+        { [field]: { contains: value.toUpperCase() } },
+        { [field]: { equals: value } },
+        { [field]: { equals: value.toLowerCase() } },
+        { [field]: { equals: value.toUpperCase() } }
+      ]
+    };
+  }
+
+  // FIX: Get featured events untuk homepage
+  async getFeaturedEvents(limit: number = 6) {
+    const oneWeekFromNow = new Date();
+    oneWeekFromNow.setDate(oneWeekFromNow.getDate() + 7);
+
+    return prisma.event.findMany({
+      where: {
+        isPublished: true,
+        isDeleted: false,
+        startDate: { 
+          gte: new Date(),
+          lte: oneWeekFromNow
+        },
+        availableSeats: { gt: 0 }
+      },
+      include: {
+        organizer: {
+          select: {
+            id: true,
+            fullName: true,
+            profilePicture: true,
+          },
+        },
+        ticketTypes: {
+          where: {
+            isDeleted: false
+          },
+          orderBy: { price: 'asc' },
+          take: 1
+        },
+        _count: {
+          select: {
+            attendees: {
+              where: {
+                transaction: {
+                  status: {
+                    in: ['DONE', 'SUCCESS', 'CONFIRMED']
+                  }
+                }
+              }
+            },
+          },
+        },
+      },
+      orderBy: {
+        startDate: 'asc'
+      },
+      take: limit
+    });
+  }
+
+  // FIX: Get events by category
+  async getEventsByCategory(category: string, page: number = 1, limit: number = 10) {
+    const skip = (page - 1) * limit;
+
+    const [events, total] = await Promise.all([
+      prisma.event.findMany({
+        where: {
+          isPublished: true,
+          isDeleted: false,
+          OR: [
+            { category: { contains: category } },
+            { category: { contains: category.toLowerCase() } },
+            { category: { contains: category.toUpperCase() } }
+          ]
+        },
+        include: {
+          organizer: {
+            select: {
+              id: true,
+              fullName: true,
+              profilePicture: true,
+            },
+          },
+          ticketTypes: {
+            where: {
+              isDeleted: false
+            }
+          },
+          _count: {
+            select: {
+              attendees: {
+                where: {
+                  transaction: {
+                    status: {
+                      in: ['DONE', 'SUCCESS', 'CONFIRMED']
+                    }
+                  }
+                }
+              },
+            },
+          },
+        },
+        orderBy: { startDate: 'asc' },
+        skip,
+        take: limit,
+      }),
+      prisma.event.count({
+        where: {
+          isPublished: true,
+          isDeleted: false,
+          OR: [
+            { category: { contains: category } },
+            { category: { contains: category.toLowerCase() } },
+            { category: { contains: category.toUpperCase() } }
+          ]
+        }
+      }),
+    ]);
+
+    const totalPages = Math.ceil(total / limit);
+
+    return {
+      events,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages,
+      },
+    };
   }
 }

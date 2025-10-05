@@ -2,6 +2,9 @@
   "name": "api",
   "version": "1.0.0",
   "main": "index.js",
+  "prisma": {
+    "schema": "prisma/schema.prisma"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "ts-node-dev src/server.ts",
